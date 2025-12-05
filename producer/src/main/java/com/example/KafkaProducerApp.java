@@ -28,14 +28,18 @@ public class KafkaProducerApp {
         props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
 
         KafkaProducer<String, String> producer = new KafkaProducer<>(props);
+        // Configuration ObjectMapper sans null bytes
         ObjectMapper mapper = new ObjectMapper();
+        mapper.getFactory().configure(com.fasterxml.jackson.core.JsonGenerator.Feature.WRITE_BIGDECIMAL_AS_PLAIN, true);
+
         int totalRecords = 0;
 
         try (BufferedReader br = new BufferedReader(new FileReader("../data/housing.csv"))) {
             System.out.println("Reading CSV file...");
             String line;
             boolean header = true;
-            List<Map<String, String>> batch = new ArrayList<>();
+            List<List<String>> batch = new ArrayList<>();
+            java.util.regex.Pattern pattern = java.util.regex.Pattern.compile("\\s+");
             int lineCount = 0;
 
             while ((line = br.readLine()) != null) {
@@ -46,37 +50,28 @@ public class KafkaProducerApp {
                     continue;
                 }
 
-                String[] values = line.trim().replaceAll("\\s+", " ").split(" ");
+                // Parser correctement le CSV Boston Housing (séparé par espaces multiples)
+                String[] values = pattern.split(line.trim());
                 if (values.length >= 14) {
-                    // Take the first 14 columns, ensure they're valid
-                    Map<String, String> record = new HashMap<>();
+                    List<String> record = new ArrayList<>();
                     try {
-                        record.put("crim", values[0]);
-                        record.put("zn", values[1]);
-                        record.put("indus", values[2]);
-                        record.put("chas", values[3]);
-                        record.put("nox", values[4]);
-                        record.put("rm", values[5]);
-                        record.put("age", values[6]);
-                        record.put("dis", values[7]);
-                        record.put("rad", values[8]);
-                        record.put("tax", values[9]);
-                        record.put("ptratio", values[10]);
-                        record.put("b", values[11]);
-                        record.put("lstat", values[12]);
-                        record.put("medv", values[13]);
+                        // Prendre exactement les 14 colonnes
+                        for (int i = 0; i < 14; i++) {
+                            String cleanValue = values[i].trim().replaceAll("\\u0000", "").replaceAll("\\r?\\n", "");
+                            record.add(cleanValue);
+                        }
                         batch.add(record);
+                        totalRecords++;
                     } catch (Exception e) {
-                        // Skip lines that can't be parsed
+                        System.err.println("Error parsing line " + lineCount + " after filter: " + e.getMessage());
                     }
-                    totalRecords++;
 
                     if (batch.size() == BATCH_SIZE) {
                         sendBatch(producer, mapper, batch);
                         batch.clear();
                     }
                 } else {
-                    System.err.println("Line " + lineCount + " has " + values.length + " columns after filter (skipped): " + line.substring(0, Math.min(line.length(), 100)));
+                    System.err.println("Line " + lineCount + " has " + values.length + " columns after filter (skipped): ");
                 }
             }
 
@@ -94,8 +89,37 @@ public class KafkaProducerApp {
         }
     }
 
-    private static void sendBatch(KafkaProducer<String, String> producer, ObjectMapper mapper, List<Map<String, String>> batch) throws Exception {
-        String json = mapper.writeValueAsString(batch);
+    private static void sendBatch(KafkaProducer<String, String> producer, ObjectMapper mapper, List<List<String>> batch) throws Exception {
+        // Créer un JSON propre sans caractères null
+        StringBuilder jsonBuilder = new StringBuilder();
+        jsonBuilder.append("[");
+
+        for (int i = 0; i < batch.size(); i++) {
+            List<String> record = batch.get(i);
+            if (i > 0) jsonBuilder.append(",");
+
+            // Construire JSON manuellement pour éviter les caractères null
+            jsonBuilder.append("{");
+            jsonBuilder.append("\"crim\":\"").append(record.get(0)).append("\",");
+            jsonBuilder.append("\"zn\":\"").append(record.get(1)).append("\",");
+            jsonBuilder.append("\"indus\":\"").append(record.get(2)).append("\",");
+            jsonBuilder.append("\"chas\":\"").append(record.get(3)).append("\",");
+            jsonBuilder.append("\"nox\":\"").append(record.get(4)).append("\",");
+            jsonBuilder.append("\"rm\":\"").append(record.get(5)).append("\",");
+            jsonBuilder.append("\"age\":\"").append(record.get(6)).append("\",");
+            jsonBuilder.append("\"dis\":\"").append(record.get(7)).append("\",");
+            jsonBuilder.append("\"rad\":\"").append(record.get(8)).append("\",");
+            jsonBuilder.append("\"tax\":\"").append(record.get(9)).append("\",");
+            jsonBuilder.append("\"ptratio\":\"").append(record.get(10)).append("\",");
+            jsonBuilder.append("\"b\":\"").append(record.get(11)).append("\",");
+            jsonBuilder.append("\"lstat\":\"").append(record.get(12)).append("\",");
+            jsonBuilder.append("\"medv\":\"").append(record.get(13)).append("\"");
+            jsonBuilder.append("}");
+        }
+
+        jsonBuilder.append("]");
+
+        String json = jsonBuilder.toString();
         ProducerRecord<String, String> record = new ProducerRecord<>(TOPIC, json);
         producer.send(record);
         System.out.println("Sent batch of " + batch.size() + " records to Kafka");
